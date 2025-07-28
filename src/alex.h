@@ -44,6 +44,8 @@
 #include "alex_fanout_tree.h"
 #include "alex_nodes.h"
 
+#include <signal.h>
+
 // Whether we account for floating-point precision issues when traversing down
 // ALEX.
 // These issues rarely occur in practice but can cause incorrect behavior.
@@ -95,7 +97,7 @@ public:
     // When bulk loading, Alex can use provided knowledge of the expected
     // fraction of operations that will be inserts
     // For simplicity, operations are either point lookups ("reads") or inserts
-    // ("writes)
+    // ("writes)0
     // i.e., 0 means we expect a read-only workload, 1 means write-only
     double expected_insert_frac = 1;
     // Maximum node size, in bytes. By default, 16MB.
@@ -376,6 +378,10 @@ private:
 
 public:
   Alex() {
+//    std::cout << "(alex.h) ALEX MEMTABLE CREATED\n";
+    // std::cout << "flag = " << skeletonize_index << std::endl;
+//    std::cout << "max_node_size: " << params_.max_node_size << std::endl;
+//    std::cout << "Size of V: " << sizeof(V) << std::endl;
     // Set up root as empty data node
     auto empty_data_node = new (data_node_allocator().allocate(1))
         data_node_type(key_less_, allocator_);
@@ -413,11 +419,17 @@ public:
   }
 
   ~Alex() {
-    for (NodeIterator node_it = NodeIterator(this); !node_it.is_end();
-         node_it.next()) {
-      delete_node(node_it.current());
-    }
-    delete_node(superroot_);
+//    std::cout << "(alex.h) DESTRUCTOR CALLED\n";
+//    std::cout << "Model size before: " << model_size() << std::endl;
+//    std::cout << "Data size before: " << data_size() << std::endl;
+    // if (!skeletonize_index) {
+      // std::cout << "(alex.h) DESTRUCTOR CALLED, DELETING ENTIRE INDEX\n";
+       for (NodeIterator node_it = NodeIterator(this); !node_it.is_end();
+            node_it.next()) {
+         delete_node(node_it.current());
+       }
+       delete_node(superroot_);
+    //  }
   }
 
   // Initializes with range [first, last). The range does not need to be
@@ -463,6 +475,7 @@ public:
         stats_(other.stats_), experimental_params_(other.experimental_params_),
         istats_(other.istats_), key_less_(other.key_less_),
         allocator_(other.allocator_) {
+    std::cout << "(alex.h) IN COPY CONSTRUCTOR\n";
     superroot_ =
         static_cast<model_node_type *>(copy_tree_recursive(other.superroot_));
     root_node_ = superroot_->children_[0];
@@ -470,6 +483,7 @@ public:
   }
 
   Alex &operator=(const self_type &other) {
+    // std::cout << "(alex.h) INVOKING THE ASSIGNMENT OPERATOR\n";
     if (this != &other) {
       for (NodeIterator node_it = NodeIterator(this); !node_it.is_end();
            node_it.next()) {
@@ -506,6 +520,7 @@ public:
 private:
   // Deep copy of tree starting at given node
   AlexNode<T, P> *copy_tree_recursive(const AlexNode<T, P> *node) {
+    // std::cout << "copying the tree recursively\n";
     if (!node)
       return nullptr;
     if (node->is_leaf_) {
@@ -561,23 +576,24 @@ public:
     __atomic_store_n(&root_lock_, v + 1 - lockSet, __ATOMIC_RELEASE);
   }
 
-  
-
   inline bool try_get_write_lock() {
     uint32_t v = __atomic_load_n(&index_lock_, __ATOMIC_ACQUIRE);
     if (v & lockSet)
       return false;
+
     uint32_t old_value = v & lockMask;
     uint32_t new_value = old_value | lockSet;
-  
+
     if (!CAS(&index_lock_, &old_value, new_value)) {
       return false;
     }
+
     // wait until the readers all exit the critical section
     v = __atomic_load_n(&index_lock_, __ATOMIC_ACQUIRE);
     while (v & lockMask) {
       v = __atomic_load_n(&index_lock_, __ATOMIC_ACQUIRE);
     }
+
     return true;
   }
 
@@ -585,7 +601,6 @@ public:
     uint32_t locked_value = lockSet;
     while(!CAS(&index_lock_, &locked_value, 0)) {
       locked_value = lockSet;
-
     }
   }
 
@@ -802,12 +817,11 @@ printf("prev last key is %.20f\n", prev_leaf->last_key());*/
     }
   }
 
-  
   // Link all data nodes together. Used after bulk loading.
-
   void link_all_data_nodes() {
     data_node_type *prev_leaf = nullptr;
-    for (NodeIterator node_it = NodeIterator(this); !node_it.is_end(); node_it.next()) {
+    for (NodeIterator node_it = NodeIterator(this); !node_it.is_end();
+          node_it.next()) {
       AlexNode<T, P> *cur = node_it.current();
       if (cur->is_leaf_) {
         auto node = static_cast<data_node_type *>(cur);
@@ -1034,8 +1048,8 @@ public:
     root_node_->model_.a_ = 1.0 / (max_key - min_key);
     root_node_->model_.b_ = -1.0 * min_key * root_node_->model_.a_;
 
-    std::cout << "Min key = " << min_key << std::endl;
-    std::cout << "Max key = " << max_key << std::endl;
+//    std::cout << "Min key = " << min_key << std::endl;
+//    std::cout << "Max key = " << max_key << std::endl;
 
     // Compute cost of root node
     LinearModel<T> root_data_node_model;
@@ -1798,12 +1812,15 @@ public:
   bool insert(const T &key, const P &payload) {
     EpochGuard guard;
   RETRY:
+//    std::cout << "(alex.h) stats.num_keys: " << stats_.num_keys << std::endl;
+    // std::cout << "root: " << root_node_ << ", root lock: " << ((data_node_type*) root_node_)->lock_ << std::endl;
     // If enough keys fall outside the key domain, expand the root to expand the
     // key domain
     if (key > istats_.key_domain_max_) {
       istats_.num_keys_above_key_domain++;
       if (should_expand_right()) {
         if (superroot_->try_get_write_lock()) {
+        // if (try_get_write_lock()) {
           int res = 0;
           if (should_expand_right()) {
             res = expand_root(key, false); // expand to the right
@@ -1819,17 +1836,20 @@ public:
       istats_.num_keys_below_key_domain++;
       if (should_expand_left()) {
         if (superroot_->try_get_write_lock()) {
+        // if (try_get_write_lock()) {
+          int res = 0;
           if (should_expand_left()) {
             res = expand_root(key, true); // expand to the left
           }
           superroot_->release_write_lock();
-           if (res < 0) {
+          if (res < 0) {
             goto RETRY;
           }
           // release_write_lock();
         }
       }
     }
+    // get_read_lock();
 
     data_node_type *leaf = get_leaf(key);
     // Nonzero fail flag means that the insert did not happen
@@ -1837,26 +1857,36 @@ public:
     int fail = ret.first;
     int insert_pos = ret.second;
 
+//    if (fail != 0) {
+//	std::cout << fail << std::endl;
+//    }
+
+    // std::cout << "fail code: " << fail << std::endl;
+
     // If no insert, figure out what to do with the data node to decrease the
     // cost
     if (fail) {
       if (fail == -1) {
         // Duplicate found and duplicates not allowed
+        // release_read_lock();
         return false;
       }
 
       if (fail == 4) {
+        // release_read_lock();
         goto RETRY; // The operation is in a locking state, need retry
       }
 
       if (fail == 5) { // Data node resizing
         // std::cout << "DN expansion with node scaling, key = " << key <<
         // std::endl;
+//        std::cout << "RESIZING DATA NODE\n";
         // 3. Update parent node
         std::vector<TraversalNode> traversal_path;
         while (!lock_parent_node(key, &traversal_path, leaf, false)) {
           traversal_path.clear();
         }
+
         // 1. Allocate new node
         data_node_type *node;
         data_node_type::New_from_existing(reinterpret_cast<void **>(&node),
@@ -1882,26 +1912,42 @@ public:
 
         // 4. Link to sibling node (Need redo upon reocvery)
         link_resizing_data_nodes(leaf, node);
-        
+
+        // attempt 1
+        // if (root_node_ == static_cast<AlexNode<T, P> *>(leaf)) {
+        //   parent->promote_from_read_to_write();
+        //   root_node_ = node;
+        //   node->release_lock();
+        //   parent->release_write_lock();
+        // } else {
+        //   node->release_lock();
+        //   parent->release_read_lock();
+        // }
+
+        // attempt 2
+
         if (root_node_ == static_cast<AlexNode<T, P> *>(leaf)) {
           root_node_ = node;
           update_superroot_pointer();
         }
-
         node->release_lock();
         parent->release_read_lock();
+
+        // original
+        // node->release_lock();
+        // parent->release_read_lock();
 
         release_link_locks_for_resizing(node);
 
         safe_delete_node(leaf);
+        // release_read_lock();
         return true;
       }
 
-       if (leaf == static_cast<data_node_type*>(root_node_)) {
+      if (leaf == static_cast<data_node_type*>(root_node_)) {
         leaf->min_limit_ = get_min_key();
         leaf->max_limit_ = get_max_key();
       }
-
       std::vector<fanout_tree::FTNode> used_fanout_tree_nodes;
       int fanout_tree_depth = 1;
       if (experimental_params_.splitting_policy_method == 0 || fail >= 2) {
@@ -1921,11 +1967,13 @@ public:
       }
 
       if (fanout_tree_depth == 0) {
-         // 3. Update parent node
+
+        // 3. Update parent node
         std::vector<TraversalNode> traversal_path;
         while (!lock_parent_node(key, &traversal_path, leaf, false)) {
           traversal_path.clear();
         }
+
         // std::cout << "DN expansion with node retraining, key = " << key <<
         // std::endl;
         // 1. Allocate new node
@@ -1960,7 +2008,7 @@ public:
 
         // 4. Link to sibling node (Need redo upon reocvery)
         link_resizing_data_nodes(leaf, node);
-        
+
         if (parent == superroot_) {
           root_node_ = node;
           update_superroot_pointer();
@@ -1982,19 +2030,27 @@ public:
           // To-DO
         } else {
           // either split sideways or downwards
+//          std::cout << "SPLITTING DATA NODE\n";
           split_sideways_downwards_without_parent(leaf, fanout_tree_depth,
                                                   used_fanout_tree_nodes,
                                                   reuse_model, key);
+	  // if (key == 42260849165525997) {
+            // raise(SIGSTOP);
+	  // }
         }
       }
     }
-    // stats_.num_inserts++;
-    // stats_.num_keys++;
+    stats_.num_inserts++;
+    stats_.num_keys++;
     thread_local int insert_counter(0);
     insert_counter = (insert_counter + 1) & counterMask;
     if (insert_counter == 0) {
       ADD(&stats_.num_keys, (1 << counterMaskLog2));
     }
+    // if (key == 42262306431222123) {
+      // raise(SIGSTOP);
+    // }
+    // release_read_lock();
     return true;
   }
 
@@ -2071,6 +2127,9 @@ public:
           old_node, tree_node.left_boundary, tree_node.right_boundary, false,
           &tree_node, false, keep_left, keep_right);
       j++;
+      // if (tree_node.right_boundary < 1) {
+        // raise(SIGSEGV);
+      // }
       // child_node->level_ = static_cast<short>(parent->level_ + 1);
       child_node->lock_ = lockSet;
       child_node->cost_ = tree_node.cost;
@@ -2091,6 +2150,7 @@ public:
       data_node_type *leaf, int fanout_tree_depth,
       std::vector<fanout_tree::FTNode> &used_fanout_tree_nodes,
       bool reuse_model, T key) {
+//     std::cout << "(alex.h) SPLITTING NODE" << std::endl;
     data_node_type *left_leaf = nullptr;
     data_node_type *right_leaf = nullptr;
 
@@ -2458,7 +2518,7 @@ stop_cost =
   // If the root node is at the max node size, then we split the root and create
   // a new root node.
   int expand_root(T key, bool expand_left) {
-    // std::cout << "Expanding the root" << std::endl;
+//    std::cout << "(alex.h) EXPANDING ROOT" << std::endl;
     model_node_type * root = static_cast<model_node_type *>(root_node_);
     if (!root->try_get_write_lock()) {
       return -1;
@@ -2480,7 +2540,6 @@ stop_cost =
     int expansion_factor;
     T new_domain_min = istats_.key_domain_min_;
     T new_domain_max = istats_.key_domain_max_;
-    // data_node_type *outermost_node;
     if (expand_left) {
       auto key_difference = static_cast<double>(istats_.key_domain_min_ -
                                                 std::min(key, get_min_key()));
@@ -2500,7 +2559,6 @@ stop_cost =
       }
       istats_.num_keys_at_last_left_domain_resize = stats_.num_keys;
       istats_.num_keys_below_key_domain = 0;
-      // outermost_node = first_data_node();
     } else {
       auto key_difference = static_cast<double>(std::max(key, get_max_key()) -
                                                 istats_.key_domain_max_);
@@ -2520,19 +2578,18 @@ stop_cost =
       }
       istats_.num_keys_at_last_right_domain_resize = stats_.num_keys;
       istats_.num_keys_above_key_domain = 0;
-      // outermost_node = last_data_node();
     }
     assert(expansion_factor > 1);
     model_node_type *new_root;
     bool delete_root = false;
-
     // Modify the root node appropriately
     int new_nodes_start; // index of first pointer to a new node
     int new_nodes_end;   // exclusive
     if (static_cast<size_t>(root->num_children_) * expansion_factor <=
         static_cast<size_t>(derived_params_.max_fanout)) {
       new_root = new (model_node_allocator().allocate(1))
-      model_node_type(static_cast<short>(root->level_), allocator_);
+        model_node_type(static_cast<short>(root->level_), allocator_);
+
       new_root->is_leaf_ = root->is_leaf_;
       new_root->is_obsolete_ = root->is_obsolete_;
       new_root->local_depth_ = root->local_depth_;
@@ -2541,6 +2598,7 @@ stop_cost =
       new_root->model_.b_ = root->model_.b_;
       new_root->cost_ = root->cost_;
       new_root->lock_ = root->lock_;
+
       // Expand root node
       stats_.num_model_node_expansions++;
       stats_.num_model_node_expansion_pointers += root->num_children_;
@@ -2565,6 +2623,7 @@ stop_cost =
           root->children_[i]->local_depth_ += log_2_round_down(expansion_factor);
         }
         new_children[copy_start + i] = root->children_[i];
+        prev = root->children_[i];
       }
       // pointer_allocator().deallocate(root->children_, root->num_children_);
       new_root->children_ = new_children;
@@ -2590,7 +2649,12 @@ stop_cost =
         new_nodes_start = 1;
       }
       new_nodes_end = new_nodes_start + expansion_factor - 1;
+      // root_node_->is_obsolete_ = true;
+      // safe_delete_node(root_node_);
       root->local_depth_ = log_2_round_down(expansion_factor);
+      // root_node_ = new_root;
+      // update_superroot_pointer();
+      // root = new_root;
     }
     // Determine if new nodes represent a range outside the key type's domain.
     // This happens when we're preventing overflows.
@@ -2655,26 +2719,25 @@ stop_cost =
           break;
         }
         int left_boundary = right_boundary;
-        double min_limit = max_limit;
+	double min_limit = max_limit;
         if (i + n >= in_bounds_new_nodes_end) {
           right_boundary = outermost_node->data_capacity_;
         } else {
           right_boundary_value += domain_size;
           right_boundary = outermost_node->lower_bound(right_boundary_value);
         }
-         if (i + n < in_bounds_new_nodes_end) {
+        if (i + n < in_bounds_new_nodes_end) {
           double next_node_min = static_cast<double>(outermost_node->get_key(outermost_node->upper_bound(right_boundary_value)));
-	        max_limit = (static_cast<double>(right_boundary_value) + next_node_min) / 2;
-        } 
-        else {
-           max_limit = outermost_node->max_limit_;
-          }
+	  max_limit = (static_cast<double>(right_boundary_value) + next_node_min) / 2;
+	} else {
+          max_limit = outermost_node->max_limit_;
+	}
         data_node_type *new_node = bulk_load_leaf_node_from_existing(
             outermost_node, left_boundary, right_boundary, true);
         new_node->level_ = static_cast<short>(new_root->level_ + 1);
         new_node->local_depth_ = new_local_depth;
-        new_node->min_limit_ = min_limit;
-	      new_node->max_limit_ = max_limit;
+	new_node->min_limit_ = min_limit;
+	new_node->max_limit_ = max_limit;
         if (prev) {
           prev->next_leaf_ = new_node;
         }
@@ -2692,7 +2755,7 @@ stop_cost =
     if (expand_left) {
       outermost_node->erase_range(new_domain_min, istats_.key_domain_min_);
       auto last_new_leaf =
-        static_cast<data_node_type *>(new_root->children_[new_nodes_end - 1]);
+          static_cast<data_node_type *>(new_root->children_[new_nodes_end - 1]);
       outermost_node->prev_leaf_ = last_new_leaf;
       last_new_leaf->next_leaf_ = outermost_node;
     } else {
@@ -2716,6 +2779,7 @@ stop_cost =
       root->release_write_lock();
     }
     new_root->release_write_lock();
+    // raise(SIGSTOP);
     return 0;
   }
 
@@ -3091,6 +3155,7 @@ public:
       while (cur_bitmap_data_ == 0) {
         cur_bitmap_idx_++;
         if (cur_bitmap_idx_ >= cur_leaf_->bitmap_size_) {
+//            std::cout << "(alex.h) NEXT LEAF" << std::endl;
           cur_leaf_ = cur_leaf_->next_leaf_;
           cur_idx_ = 0;
           if (cur_leaf_ == nullptr) {
@@ -3526,12 +3591,19 @@ public:
 
   /*** Re-Use Index Structure ***/
   void skeletonize() {
+    // std::cout << "(alex.h) SKELETONIZATION STARTED\n";
+    // int deletions = 0;
     Iterator it = begin();
     while (!it.is_end()) {
       erase(it, true);
+      // deletions++;
       it++;
     }
+//    std::cout << "Model size after: " << model_size() << std::endl;
+//    std::cout << "Data size after: " << data_size() << std::endl;
+    // std::cout << "(alex.h) SKELETONIZATION COMPLETED, deletions: " << deletions << std::endl;
     stats_.num_keys = 0;
+    // link_all_data_nodes();
   }
 };
 } // namespace alexol
