@@ -492,10 +492,16 @@ int find_best_fanout_existing_node_without_parent(
       left_limit = right_limit;
       right_limit = i == fanout - 1 ? node->max_limit_ : (((i + 1) - b) / a);
 
+      
       if (left_boundary == right_boundary) {
+        LinearModel<T> model;
+        LinearModelBuilder<T> builder(&model);
+        builder.add(static_cast<T>(left_limit),0);
+        builder.add(static_cast<T>(right_limit),1);
+        builder.build();
         new_level.push_back({fanout_tree_level, i, 0, left_boundary,
                              right_boundary, left_limit, right_limit, false, 0,
-                             0, 0, 0, 0, nullptr});
+                             0, model.a_, model.b_, 0, nullptr});
         continue;
       }
       int num_actual_keys = 0;

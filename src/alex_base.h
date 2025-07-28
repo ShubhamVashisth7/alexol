@@ -65,13 +65,12 @@ namespace alexol {
 
 const uint32_t lockSet = ((uint32_t)1 << 31);
 const uint32_t lockMask = ((uint32_t)1 << 31) - 1;
-const int counterMask = (1 << 19) - 1;
-
-void align_alloc(void **ptr, size_t size){
+const int counterMaskLog2 = 10;
+const int counterMask = (1 << counterMaskLog2) - 1;
+inline void align_alloc(void **ptr, size_t size){
   posix_memalign(ptr, 64, size);
 }
-
-void align_zalloc(void **ptr, size_t size){
+inline void align_zalloc(void **ptr, size_t size){
   posix_memalign(ptr, 64, size);
   memset(*ptr, 0, size);
 }
@@ -227,12 +226,12 @@ inline int get_offset(int word_id, uint64_t bit) {
 /*** Cost model weights ***/
 
 // Intra-node cost weights
-double kExpSearchIterationsWeight = 20;
-double kShiftsWeight = 0.5;
+constexpr double kExpSearchIterationsWeight = 20;
+constexpr double kShiftsWeight = 0.5;
 
 // TraverseToLeaf cost weights
-double kNodeLookupsWeight = 20;
-double kModelSizeWeight = 5e-7;
+constexpr double kNodeLookupsWeight = 20;
+constexpr double kModelSizeWeight = 5e-7;
 
 /*** Stat Accumulators ***/
 
@@ -426,7 +425,7 @@ class CPUID {
 };
 
 // https://en.wikipedia.org/wiki/CPUID#EAX=7,_ECX=0:_Extended_Features
-bool cpu_supports_bmi() {
+inline bool cpu_supports_bmi() {
   return static_cast<bool>(CPUID(7, 0).EBX() & (1 << 3));
 }
 }

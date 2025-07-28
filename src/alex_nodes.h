@@ -378,7 +378,7 @@ public:
   double contraction_threshold_ =
       0; // contract after m_num_keys is < this number
   static constexpr int kDefaultMaxDataNodeBytes_ =
-      1 << 19; // by default, maximum data node size is 256KB
+      1 << 20; // by default, maximum data node size is 256KB
   int max_slots_ =
       kDefaultMaxDataNodeBytes_ /
       sizeof(V); // cannot expand beyond this number of key/data slots
@@ -2459,27 +2459,28 @@ public:
   }
 
   // Erase the key at the given position
-  void erase_one_at(int pos) {
-    T next_key;
-    if (pos == data_capacity_ - 1) {
-      next_key = kEndSentinel_;
-    } else {
-      next_key = ALEX_DATA_NODE_KEY_AT(pos + 1);
+  void erase_one_at(int pos, bool disable_resizing_due_to_skeletonization = false) {
+    if (disable_resizing_due_to_skeletonization) {
+        // For skeletonization: Replace key with a tombstone and unset the bitmap
+        // ALEX_DATA_NODE_KEY_AT(pos) = std::numeric_limits<T>::max(); // Tombstone key
+        ALEX_DATA_NODE_PAYLOAD_AT(pos) = nullptr;
+        unset_bit(pos); 
+        num_keys_--;
+        return; // Skip structural changes (no gap merging or resizing)
+
     }
+    // Original logic for normal erase
+    T next_key = (pos == data_capacity_ - 1) ? kEndSentinel_ : ALEX_DATA_NODE_KEY_AT(pos + 1);
     ALEX_DATA_NODE_KEY_AT(pos) = next_key;
     unset_bit(pos);
     pos--;
-
-    // Erase preceding gaps until we reach an existing key
     while (pos >= 0 && !check_exists(pos)) {
-      ALEX_DATA_NODE_KEY_AT(pos) = next_key;
-      pos--;
+        ALEX_DATA_NODE_KEY_AT(pos) = next_key;
+        pos--;
     }
-
     num_keys_--;
-
     if (num_keys_ < contraction_threshold_) {
-      resize(kMaxDensity_); // contract
+      resize(kMaxDensity_);
       num_resizes_++;
     }
   }
